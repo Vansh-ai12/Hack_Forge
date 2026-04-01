@@ -1,25 +1,31 @@
-
+"""
+AeroSync AI - Typed Pydantic Models
+OpenEnv compliant: Observation, Action, Reward
+"""
 from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
-from pydantic import BaseModel, Field
- 
+from pydantic import BaseModel, ConfigDict, Field
 
- 
+
+# ─────────────────────────────────────────────
+# Enums
+# ─────────────────────────────────────────────
+
 class AgentType(str, Enum):
     ROBOT = "robot"
     DRONE = "drone"
- 
- 
+
+
 class TaskStatus(str, Enum):
     PENDING    = "pending"
-    PICKED     = "picked"        
-    DISPATCHED = "dispatched"     
-    IN_FLIGHT  = "in_flight" | None     
-    DELIVERED  = "delivered"      
+    PICKED     = "picked"         
+    DISPATCHED = "dispatched"     # Robot delivered item to dispatch zone
+    IN_FLIGHT  = "in_flight"      # Drone carrying item to customer
+    DELIVERED  = "delivered"      # Final delivery complete
     FAILED     = "failed"
- 
- 
+
+
 class ActionType(str, Enum):
     MOVE        = "move"
     PICK        = "pick"
@@ -27,24 +33,27 @@ class ActionType(str, Enum):
     CHARGE      = "charge"
     WAIT        = "wait"
     ASSIGN_TASK = "assign_task"
- 
- 
+
+
 class Direction(str, Enum):
     NORTH = "north"
     SOUTH = "south"
     EAST  = "east"
     WEST  = "west"
-    UP    = "up" | None   
-    DOWN  = "down" | None 
- 
- 
+    UP    = "up"     # drones only
+    DOWN  = "down"   # drones only
+
+
+# ─────────────────────────────────────────────
+# Sub-models
+# ─────────────────────────────────────────────
 
 class Position(BaseModel):
     x: int = Field(..., description="X coordinate on grid")
     y: int = Field(..., description="Y coordinate on grid")
     z: int = Field(0, description="Z level: 0=ground, 1=air")
- 
- 
+
+
 class AgentState(BaseModel):
     agent_id: str              = Field(..., description="Unique agent identifier")
     agent_type: AgentType      = Field(..., description="robot or drone")
@@ -54,12 +63,12 @@ class AgentState(BaseModel):
     is_charging: bool          = Field(False, description="Currently at charging station")
     is_idle: bool              = Field(True, description="No current assignment")
     steps_taken: int           = Field(0, description="Steps taken this episode")
- 
- 
+
+
 class TaskState(BaseModel):
     task_id: str               = Field(..., description="Unique task identifier")
     status: TaskStatus         = Field(TaskStatus.PENDING)
-    item_id: str             = Field(..., description="ID of the item")
+    item_name: str             = Field(..., description="Name of the item")
     pickup_location: Position  = Field(..., description="Warehouse shelf location")
     dispatch_location: Position= Field(..., description="Dispatch / handoff zone")
     delivery_location: Position= Field(..., description="Customer delivery point")
@@ -68,8 +77,8 @@ class TaskState(BaseModel):
     created_at_step: int       = Field(0)
     completed_at_step: Optional[int] = Field(None)
     priority: int              = Field(1, ge=1, le=3, description="1=normal, 2=express, 3=urgent")
- 
- 
+
+
 class GridCell(BaseModel):
     x: int
     y: int
@@ -79,12 +88,12 @@ class GridCell(BaseModel):
     is_charging: bool   = False
     is_shelf: bool      = False
     occupant_id: Optional[str] = None   # agent currently on this cell
- 
- 
+
+
 # ─────────────────────────────────────────────
 # OpenEnv Core Models
 # ─────────────────────────────────────────────
- 
+
 class AeroSyncObservation(BaseModel):
     """Full observation returned by reset() and step()"""
     step: int                             = Field(..., description="Current step number")
@@ -99,22 +108,20 @@ class AeroSyncObservation(BaseModel):
     done: bool                            = Field(False)
     task_name: str                        = Field("", description="Current task name: easy/medium/hard")
     metrics: Dict[str, float]             = Field(default_factory=dict, description="Live performance metrics")
- 
-    class Config:
-        use_enum_values = True
- 
- 
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
 class AeroSyncAction(BaseModel):
     """Action issued to the environment"""
     agent_id: str              = Field(..., description="Which agent to act")
     action_type: ActionType    = Field(..., description="What action to perform")
     direction: Optional[Direction] = Field(None, description="Direction for MOVE action")
     task_id: Optional[str]     = Field(None, description="Task ID for ASSIGN_TASK / PICK / PLACE")
- 
-    class Config:
-        use_enum_values = True
- 
- 
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
 class AeroSyncReward(BaseModel):
     """Detailed reward breakdown (returned inside info dict)"""
     total: float                    = Field(0.0)
@@ -125,8 +132,8 @@ class AeroSyncReward(BaseModel):
     battery_penalty: float          = Field(0.0)
     delay_penalty: float            = Field(0.0)
     idle_penalty: float             = Field(0.0)
- 
- 
+
+
 class EpisodeInfo(BaseModel):
     """Extra info returned by step()"""
     reward_breakdown: AeroSyncReward = Field(default_factory=AeroSyncReward)
