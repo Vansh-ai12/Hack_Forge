@@ -13,7 +13,7 @@ from grader.grader import grade, detailed_report
 from tasks.easy   import get_config as easy_config
 from tasks.medium import get_config as medium_config
 from tasks.hard   import get_config as hard_config
-
+from env.models import ActionType
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -96,10 +96,22 @@ class TestTypedModels:
         assert isinstance(d, dict)
         assert "agents" in d
 
-    def test_action_typed(self):
-        a = AeroSyncAction(agent_id="robot_0", action_type="move", direction="north")
+    @pytest.mark.parametrize("act, direction", [
+        (ActionType.MOVE,        "north"),
+        (ActionType.PICK,        "north"),
+        (ActionType.PLACE,       "north"),
+        (ActionType.CHARGE,      None), 
+        (ActionType.WAIT,        None),  
+        (ActionType.ASSIGN_TASK, None),   
+    ])
+    def test_action_typed(self, act,direction):
+        a = AeroSyncAction(agent_id="robot_0", action_type=act, direction=direction)
         assert a.agent_id == "robot_0"
-        assert a.action_type == "move"
+        assert a.action_type == act
+        if direction is not None:
+            assert a.direction == direction
+        else:
+            assert a.direction is None
 
     def test_invalid_action_raises(self):
         with pytest.raises(Exception):
@@ -108,7 +120,7 @@ class TestTypedModels:
     def test_battery_bounded(self, easy_env):
         obs = easy_env.reset()
         for agent in obs.agents.values():
-            assert 0.0 <= agent.battery <= 100.0
+            assert 15.0 <= agent.battery <= 100.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -156,8 +168,14 @@ class TestMechanics:
         action = AeroSyncAction(agent_id="robot_0", action_type="move", direction="east")
         obs2, _, _, _ = easy_env.step(action)
         end = obs2.agents["robot_0"].position.model_dump()
-        # Should have moved east (x+1)
-        assert end["x"] == start["x"] + 1 or end == start  # blocked by boundary is ok
+
+        target = (start["x"] + 1, start["y"])
+        at_boundary = start["x"] >= obs2.grid_width - 1
+        blocked_by_obstacle = target in easy_env.obstacles
+
+        assert end["x"] == start["x"] + 1 or end == start
+        if end == start and not at_boundary and not blocked_by_obstacle:
+            pytest.fail("Internal system failure: robot_0 did not move east — no boundary or obstacle to blame")
 
     def test_battery_drains_on_move(self, easy_env):
         obs = easy_env.reset()
@@ -199,7 +217,7 @@ class TestMechanics:
         easy_env._agents["robot_0"].position.x = 0
         action = AeroSyncAction(agent_id="robot_0", action_type="move", direction="west")
         obs, _, _, _ = easy_env.step(action)
-        assert obs.agents["robot_0"].position.x == 0  # stayed at boundary
+        assert obs.agents["robot_0"].position.x == 0 
 
     def test_steps_taken_increments(self, easy_env):
         easy_env.reset()
@@ -279,9 +297,7 @@ class TestGrader:
         assert s > 0.7  # perfect delivery should be high
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# BFS pathfinder
-# ──────────────────────────────────────────────────────────────────────────────
+
 
 class TestBFS:
 

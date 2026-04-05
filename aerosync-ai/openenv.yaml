@@ -1,10 +1,13 @@
 name: aerosync-ai
-version: "1.0.0"
+version: "1.1.0"
 description: >
   AeroSync AI simulates a real-world warehouse-to-doorstep logistics pipeline.
   Robots pick items from warehouse shelves and transport them to dispatch zones.
-  Drones collect from dispatch zones and fly to customer delivery points.
-  Agents must coordinate under energy constraints and avoid collisions.
+  Autonomous drones collect packages from dispatch zones, fly through a 3D grid
+  (with altitude, wind, hover stability, and battery physics), and deliver to
+  customer locations. Agents must coordinate under energy constraints, avoid
+  collisions, and manage battery proactively. Models a real utility delivery
+  scenario with meaningful difficulty progression.
 
 tags:
   - openenv
@@ -13,11 +16,13 @@ tags:
   - robotics
   - drones
   - battery-management
+  - warehouse
+  - 3d-grid
 
 author: AeroSync AI Team
 license: MIT
 
-# ─── Task Registry ───────────────────────────────────────────────────────────
+# ── Task Registry ──────────────────────────────────────────
 tasks:
   - name: easy
     description: "1 robot + 1 drone, 2 deliveries. Open 10x10 grid, no battery pressure."
@@ -52,42 +57,59 @@ tasks:
     expected_score_random: 0.05
     expected_score_baseline: 0.22
 
-# ─── Observation Space ────────────────────────────────────────────────────────
+# ── Observation Space ──────────────────────────────────────
 observation_space:
   type: AeroSyncObservation
   fields:
     step:              "int — current step number"
     max_steps:         "int — episode horizon"
-    agents:            "Dict[str, AgentState] — all agent positions, battery, cargo"
-    tasks:             "Dict[str, TaskState]  — all task statuses and locations"
+    agents:            "Dict[str, AgentState] — robot positions, battery, cargo"
+    drone_states:      "Dict[str, DroneAgentState] — drone positions + full flight physics + diagnostics"
+    grid:              "Dict[str, GridCell] — full grid map keyed by 'x,y,z' for obstacle-aware planning"
+    tasks:             "Dict[str, TaskState] — all task statuses and locations"
     dispatch_queue:    "List[str] — task IDs waiting at dispatch for drone pickup"
     charging_stations: "List[Position] — fixed charging pad locations"
     grid_width:        "int — grid X dimension"
     grid_height:       "int — grid Y dimension"
     reward:            "float — reward received this step"
     done:              "bool — episode terminated"
-    metrics:           "Dict[str, float] — live KPIs"
+    metrics:           "Dict[str, float] — live KPIs (completion_rate, collisions, battery_failures...)"
 
-# ─── Action Space ─────────────────────────────────────────────────────────────
+# ── Action Space ───────────────────────────────────────────
 action_space:
   type: AeroSyncAction
   fields:
-    agent_id:    "str — which agent to command"
-    action_type: "enum[move, pick, place, charge, wait, assign_task]"
-    direction:   "optional enum[north, south, east, west, up, down] — for MOVE"
-    task_id:     "optional str — for ASSIGN_TASK / PICK / PLACE"
+    agent_id:             "str — which agent to command"
+    action_type:          "enum[move, pick, place, charge, wait, assign_task, hover, ascend, descend, return_to_base]"
+    direction:            "optional enum[north, south, east, west] — for MOVE"
+    task_id:              "optional str — for ASSIGN_TASK / PICK / PLACE"
+    target_altitude:      "optional int 0–10 — for ASCEND / DESCEND"
+    flight_mode_override: "optional FlightMode — force drone flight mode this step"
+    waypoints:            "optional List[FlightWaypoint] — submit a full flight plan"
 
-# ─── Reward Function ──────────────────────────────────────────────────────────
+# ── Reward Function ────────────────────────────────────────
 reward:
-  delivery_bonus:    +20.0
-  dispatch_bonus:    +10.0
-  pickup_bonus:       +5.0
-  collision_penalty: -30.0
-  battery_penalty:   -50.0
-  delay_penalty:      -0.05  # per pending task per step
-  idle_penalty:       -0.02  # per idle agent per step
+  # Core
+  delivery_bonus:          +20.0
+  dispatch_bonus:          +10.0
+  pickup_bonus:             +5.0
+  collision_penalty:       -30.0
+  battery_penalty:         -50.0
+  delay_penalty:           -0.05   # per pending task per step
+  idle_penalty:            -0.02   # per idle agent per step
+  # Drone precision
+  precision_landing_bonus:  +5.0   # scaled by hover_stability_score
+  forced_landing_penalty:  -20.0
+  efficient_rtb_bonus:      +5.0   # return before critical threshold
+  # Obstacle avoidance
+  obstacle_near_miss:       -8.0   # < 1 cell clearance
+  obstacle_proximity:       -3.0   # < 2 cells clearance
+  safe_clearance_bonus:     +0.5   # > 3 cells clearance each step
+  ttc_critical_penalty:    -10.0   # time-to-collision < 1 step
+  # Path quality
+  clean_path_bonus:        +10.0   # full delivery with zero near-miss events
 
-# ─── Grading ─────────────────────────────────────────────────────────────────
+# ── Grading ────────────────────────────────────────────────
 grading:
   score_range: [0.0, 1.0]
   deterministic: true
@@ -96,20 +118,30 @@ grading:
             + efficiency_weight * (1 - steps_used / max_steps * 0.5)
             + safety_weight * max(0, 1 - collisions*0.1 - battery_failures*0.15)
             + priority_weight * avg_priority_of_delivered_tasks
+  weights:
+    easy:   {completion: 0.70, efficiency: 0.15, safety: 0.10, priority: 0.05}
+    medium: {completion: 0.55, efficiency: 0.20, safety: 0.15, priority: 0.10}
+    hard:   {completion: 0.45, efficiency: 0.20, safety: 0.20, priority: 0.15}
 
-# ─── API Endpoints ────────────────────────────────────────────────────────────
+# ── API Endpoints ──────────────────────────────────────────
 api:
   reset:  "POST /reset   — body: {task_name: easy|medium|hard}"
-  step:   "POST /step    — body: AeroSyncAction"
-  state:  "GET  /state   — returns raw env state"
+  step:   "POST /step    — body: AeroSyncAction JSON"
+  state:  "GET  /state   — returns raw env state dict"
   grade:  "GET  /grade   — returns final score + breakdown"
   health: "GET  /health"
   tasks:  "GET  /tasks"
 
-# ─── Runtime ─────────────────────────────────────────────────────────────────
+# ── Runtime ────────────────────────────────────────────────
 runtime:
   framework: fastapi
   port: 7860
   docker: true
   huggingface_space: true
   python_version: "3.11"
+  inference_script: inference.py
+  env_vars:
+    - API_BASE_URL
+    - MODEL_NAME
+    - OPENAI_API_KEY
+    - HF_TOKEN

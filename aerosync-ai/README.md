@@ -43,7 +43,6 @@ Drone places at delivery location  →  Task DELIVERED  ✓
 | Battery | Drains per step; recharge at charging stations |
 | Collisions | Penalised heavily; same z-level agents only |
 | Tasks | 3-stage pipeline: pickup → dispatch → delivery |
-
 ---
 
 ## Observation space

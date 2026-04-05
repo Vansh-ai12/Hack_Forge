@@ -12,6 +12,7 @@ Usage:
     python inference.py --task easy
     python inference.py --task all --max_steps 60
 """
+
 from __future__ import annotations
 import argparse
 import json
