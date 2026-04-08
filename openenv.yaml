@@ -1,0 +1,145 @@
+name: aerosync-ai
+version: "1.2.0"
+description: >
+  AeroSync AI simulates a real-world warehouse-to-doorstep drone delivery pipeline.
+  Autonomous drones pick packages directly from warehouse shelf locations, fly through
+  a 3D grid (with altitude layers, wind, hover stability, and battery physics), and
+  deliver to customer locations. Agents must coordinate under energy constraints,
+  avoid mid-air collisions, and manage battery proactively with RTB + recharge cycling.
+  Models a real urban air mobility logistics scenario with meaningful difficulty progression.
+
+tags:
+  - openenv
+  - logistics
+  - multi-agent
+  - robotics
+  - drones
+  - battery-management
+  - warehouse
+  - 3d-grid
+
+author: AeroSync AI Team
+license: MIT
+
+# ── Task Registry ──────────────────────────────────────────
+tasks:
+  - name: easy
+    description: "2 drones, 2 deliveries. Open 10x10 grid, no obstacles, full battery — learn the pick-hover-place pipeline."
+    difficulty: 1
+    agents:
+      drones: 2
+    task_count: 2
+    max_steps: 120
+    expected_score_random: 0.10
+    expected_score_baseline: 0.45
+
+  - name: medium
+    description: "4 drones, 6 deliveries. Battery management, obstacles, priority scheduling."
+    difficulty: 2
+    agents:
+      drones: 4
+    task_count: 6
+    max_steps: 250
+    expected_score_random: 0.07
+    expected_score_baseline: 0.32
+
+  - name: hard
+    description: "6 drones (2 battery-degraded), 12 deliveries (3 urgent p=3, 4 express p=2, 5 normal p=1). 20x20 grid with walls and pillars. Collision avoidance critical."
+    difficulty: 3
+    agents:
+      drones: 6
+    task_count: 12
+    max_steps: 500
+    expected_score_random: 0.05
+    expected_score_baseline: 0.22
+
+# ── Observation Space ──────────────────────────────────────
+observation_space:
+  type: AeroSyncObservation
+  fields:
+    step:              "int — current step number"
+    max_steps:         "int — episode horizon"
+    drone_states:      "Dict[str, DroneAgentState] — drone positions + full flight physics + diagnostics"
+    grid:              "Dict[str, GridCell] — full grid map keyed by 'x,y,z' for obstacle-aware planning"
+    tasks:             "Dict[str, TaskState] — all task statuses and locations"
+    dispatch_queue:    "List[str] — task IDs waiting at dispatch for drone pickup"
+    charging_stations: "List[Position] — fixed charging pad locations"
+    grid_width:        "int — grid X dimension"
+    grid_height:       "int — grid Y dimension"
+    reward:            "float — reward received this step"
+    done:              "bool — episode terminated"
+    metrics:           "Dict[str, float] — live KPIs (completion_rate, collisions, battery_failures...)"
+
+# ── Action Space ───────────────────────────────────────────
+action_space:
+  type: AeroSyncAction
+  fields:
+    agent_id:             "str — which agent to command"
+    action_type:          "enum[move, pick, place, charge, wait, assign_task, hover, ascend, descend, return_to_base]"
+    direction:            "optional enum[north, south, east, west] — for MOVE"
+    task_id:              "optional str — for ASSIGN_TASK / PICK / PLACE"
+    target_altitude:      "optional int 0–10 — for ASCEND / DESCEND"
+    flight_mode_override: "optional FlightMode — force drone flight mode this step"
+    waypoints:            "optional List[FlightWaypoint] — submit a full flight plan"
+
+# ── Reward Function ────────────────────────────────────────
+reward:
+  # Core
+  delivery_bonus:          +20.0
+  dispatch_bonus:          +10.0
+  pickup_bonus:             +5.0
+  collision_penalty:       -30.0
+  battery_penalty:         -50.0
+  delay_penalty:           -0.05   # per pending task per step
+  idle_penalty:            -0.02   # per idle agent per step
+  # Drone precision
+  precision_landing_bonus:  +5.0   # scaled by hover_stability_score
+  forced_landing_penalty:  -20.0
+  efficient_rtb_bonus:      +5.0   # return before critical threshold
+  # Obstacle avoidance
+  obstacle_near_miss:       -8.0   # < 1 cell clearance
+  obstacle_proximity:       -3.0   # < 2 cells clearance
+  safe_clearance_bonus:     +0.5   # > 3 cells clearance each step
+  ttc_critical_penalty:    -10.0   # time-to-collision < 1 step
+  # Path quality
+  clean_path_bonus:        +10.0   # full delivery with zero near-miss events
+
+# ── Grading ────────────────────────────────────────────────
+grading:
+  score_range: [0.0, 1.0]
+  deterministic: true
+  formula: >
+    score = completion_weight * (delivered / total_tasks)
+            + efficiency_weight * (1 - steps_used / max_steps * 0.5)
+            + safety_weight * max(0, 1 - collisions*0.1 - battery_failures*0.15)
+            + priority_weight * avg_priority_of_delivered_tasks
+            + drone_weight * drone_quality_score
+  weights:
+    easy:   {completion: 0.60, efficiency: 0.15, safety: 0.10, priority: 0.05, drone_quality: 0.10}
+    medium: {completion: 0.45, efficiency: 0.18, safety: 0.17, priority: 0.10, drone_quality: 0.10}
+    hard:   {completion: 0.35, efficiency: 0.18, safety: 0.22, priority: 0.15, drone_quality: 0.10}
+
+# ── API Endpoints ──────────────────────────────────────────
+api:
+  reset:   "POST /reset   — body: {task_name: easy|medium|hard}"
+  step:    "POST /step    — body: AeroSyncAction JSON"
+  state:   "GET  /state   — returns raw env state dict"
+  grade:   "GET  /grade   — returns final score + breakdown"
+  metrics: "GET  /metrics — returns live KPI snapshot"
+  bfs:     "POST /bfs     — body: {start, goal} returns shortest path"
+  health:  "GET  /health"
+  tasks:   "GET  /tasks"
+
+# ── Runtime ────────────────────────────────────────────────
+runtime:
+  framework: fastapi
+  port: 7860
+  docker: true
+  huggingface_space: true
+  python_version: "3.11"
+  inference_script: inference.py
+  env_vars:
+    - API_BASE_URL
+    - MODEL_NAME
+    - OPENAI_API_KEY
+    - HF_TOKEN
